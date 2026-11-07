@@ -20,19 +20,15 @@ Create an account in the app to apply for pets. Passwords are stored as salted s
 
 ## Admin access
 
-Create a new administrator with a unique, generated password:
+On first startup, PawCare creates one administrator account with a random password and saves its credentials in `data/admin-credentials.txt` (a local-only file with restricted permissions). The account email is `admin@pawcare.local`.
+
+Rotate the password for that account:
 
 ```sh
 npm run admin:create
 ```
 
-The command prints the generated password once; save it securely. To grant admin privileges to an existing account instead, pass its email:
-
-```sh
-npm run admin:create -- person@example.com
-```
-
-Registration cannot set an admin role. There are no shared demo passwords.
+The password is also saved in `data/admin-credentials.txt`. The database prevents creating a second administrator, and public registration cannot grant admin access.
 
 ## Routes
 
@@ -46,3 +42,5 @@ Registration cannot set an admin role. There are no shared demo passwords.
 Run the API and React frontend together with `npm run dev`. Build production assets with `npm run build`, then serve the generated `dist` folder and API on the same origin with `npm start`.
 
 The API binds to `127.0.0.1` by default. This is a local, single-machine application. Before exposing it to a network, configure `PAWCARE_HOST`, a strong `PAWCARE_SESSION_SECRET`, HTTPS, backups, and appropriate operational security.
+
+The included Vercel configuration deploys a static demo: the public catalog works, but Vercel rewrites `/api` requests to the frontend, so real login, applications, and admin operations require deploying the API with a persistent database. Do not treat browser-only demo accounts as administrator credentials.

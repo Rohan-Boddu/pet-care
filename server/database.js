@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, scryptSync } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -39,6 +39,67 @@ export function transaction(callback) {
     db.exec("ROLLBACK");
     throw error;
   }
+}
+
+const defaultAdminEmail = "admin@pawcare.local";
+const adminCredentialsPath = resolve(dataDirectory, "admin-credentials.txt");
+
+function saveAdminCredentials(email, password) {
+  writeFileSync(adminCredentialsPath, `Email: ${email}\nPassword: ${password}\n`, { mode: 0o600 });
+  if (process.platform !== "win32") chmodSync(adminCredentialsPath, 0o600);
+}
+
+function adminCredentialsMatch(email) {
+  try {
+    const [savedEmail, savedPassword] = readFileSync(adminCredentialsPath, "utf8").split(/\r?\n/);
+    return savedEmail === `Email: ${email}` && savedPassword?.startsWith("Password: ");
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return false;
+  }
+}
+
+function rotateAdminPassword(admin) {
+  const password = randomBytes(24).toString("base64url");
+  const salt = randomBytes(16);
+  const passwordHash = scryptSync(password, salt, 64);
+  db.prepare("UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?")
+    .run(passwordHash.toString("hex"), salt.toString("hex"), admin.id);
+  saveAdminCredentials(admin.email, password);
+  return { email: admin.email, password };
+}
+
+const admins = db.prepare(`
+  SELECT id, email FROM users WHERE role = 'admin'
+  ORDER BY CASE WHEN email = ? THEN 0 ELSE 1 END, created_at, id
+`).all(defaultAdminEmail);
+if (admins.length > 1) {
+  transaction(() => {
+    db.prepare("UPDATE users SET role = 'adopter' WHERE role = 'admin' AND id <> ?").run(admins[0].id);
+  });
+}
+
+let admin = admins[0];
+if (!admin) {
+  const password = randomBytes(24).toString("base64url");
+  const salt = randomBytes(16);
+  const passwordHash = scryptSync(password, salt, 64);
+  const id = randomUUID();
+  db.prepare(`
+    INSERT INTO users (id, full_name, email, phone, password_hash, password_salt, role, created_at)
+    VALUES (?, 'PawCare Admin', ?, '', ?, ?, 'admin', ?)
+  `).run(id, defaultAdminEmail, passwordHash.toString("hex"), salt.toString("hex"), new Date().toISOString());
+  admin = { id, email: defaultAdminEmail };
+  saveAdminCredentials(admin.email, password);
+} else if (!adminCredentialsMatch(admin.email)) {
+  rotateAdminPassword(admin);
+}
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_single_admin ON users(role) WHERE role = 'admin';");
+
+export function resetAdminPassword() {
+  const soleAdmin = db.prepare("SELECT id, email FROM users WHERE role = 'admin'").get();
+  if (!soleAdmin) throw new Error("The PawCare admin account is missing.");
+  return rotateAdminPassword(soleAdmin);
 }
 
 const initialPets = [

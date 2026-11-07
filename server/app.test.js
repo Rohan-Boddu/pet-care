@@ -1,6 +1,6 @@
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
@@ -12,6 +12,7 @@ const { db } = await import("./database.js");
 let server;
 let origin;
 let adopterCookie;
+let adminCookie;
 
 before(async () => {
   server = app.listen(0);
@@ -136,14 +137,26 @@ test("local SQLite app supports real accounts, applications, and protected admin
     const denied = await request("/api/admin", { cookie: adopterCookie });
     assert.equal(denied.response.status, 403);
 
-    db.prepare("UPDATE users SET role = 'admin' WHERE email = ?").run("adopter@example.com");
-    const dashboard = await request("/api/admin", { cookie: adopterCookie });
+    const [emailLine, passwordLine] = readFileSync(resolve(temporaryDirectory, "admin-credentials.txt"), "utf8").split(/\r?\n/);
+    const adminLogin = await request("/api/auth/login", {
+      method: "POST",
+      body: { email: emailLine.replace("Email: ", ""), password: passwordLine.replace("Password: ", "") },
+    });
+    assert.equal(adminLogin.response.status, 200);
+    adminCookie = adminLogin.response.headers.getSetCookie()[0].split(";")[0];
+
+    const dashboard = await request("/api/admin", { cookie: adminCookie });
     assert.equal(dashboard.response.status, 200);
     assert.equal(dashboard.result.applications.length, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'").get().count, 1);
+    assert.throws(
+      () => db.prepare("UPDATE users SET role = 'admin' WHERE email = ?").run("adopter@example.com"),
+      /UNIQUE constraint failed/,
+    );
 
     const newPet = await request("/api/admin/pets", {
       method: "POST",
-      cookie: adopterCookie,
+      cookie: adminCookie,
       body: {
         name: "Poppy",
         type: "Dog",
@@ -162,20 +175,20 @@ test("local SQLite app supports real accounts, applications, and protected admin
 
     const petStatus = await request(`/api/admin/pets/${newPet.result.id}`, {
       method: "PATCH",
-      cookie: adopterCookie,
+      cookie: adminCookie,
       body: { status: "Pending" },
     });
     assert.equal(petStatus.response.status, 200);
     const removePet = await request(`/api/admin/pets/${newPet.result.id}`, {
       method: "DELETE",
-      cookie: adopterCookie,
+      cookie: adminCookie,
     });
     assert.equal(removePet.response.status, 204);
 
     const { id, pet_id: petId } = dashboard.result.applications[0];
     const approved = await request(`/api/admin/applications/${id}`, {
       method: "PATCH",
-      cookie: adopterCookie,
+      cookie: adminCookie,
       body: { status: "Approved" },
     });
     assert.equal(approved.response.status, 200);
@@ -185,13 +198,13 @@ test("local SQLite app supports real accounts, applications, and protected admin
 
     const cannotDelete = await request(`/api/admin/pets/${petId}`, {
       method: "DELETE",
-      cookie: adopterCookie,
+      cookie: adminCookie,
     });
     assert.equal(cannotDelete.response.status, 409);
 
-    const logout = await request("/api/auth/logout", { method: "POST", cookie: adopterCookie });
+    const logout = await request("/api/auth/logout", { method: "POST", cookie: adminCookie });
     assert.equal(logout.response.status, 204);
-    const endedSession = await request("/api/auth/me", { cookie: adopterCookie });
+    const endedSession = await request("/api/auth/me", { cookie: adminCookie });
     assert.equal(endedSession.result.user, null);
   });
 });
